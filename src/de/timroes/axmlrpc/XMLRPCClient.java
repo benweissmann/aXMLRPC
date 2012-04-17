@@ -8,12 +8,17 @@ import java.net.HttpURLConnection;
 import java.net.SocketException;
 import java.net.URL;
 import java.net.URLConnection;
+import java.security.KeyStore;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.Map;
 import javax.net.ssl.*;
+
+import android.util.Log;
 
 /**
  * An XMLRPCClient is a client used to make XML-RPC (Extensible Markup Language
@@ -131,14 +136,18 @@ public class XMLRPCClient {
 	
 	private TrustManager[] trustAllManagers;
 
+	private KeyStore trustStore;
+	private TrustManager[] customTrustManagers;
+	
 	/**
 	 * Create a new XMLRPC client for the given URL.
 	 *
 	 * @param url The URL to send the requests to.
 	 * @param userAgent A user agent string to use in the HTTP requests.
+	 * @param trustStore a KeyStore to use when checking SSL certificates
 	 * @param flags A combination of flags to be set.
 	 */
-	public XMLRPCClient(URL url, String userAgent, int flags) {
+	public XMLRPCClient(URL url, String userAgent, KeyStore trustStore, int flags) {
 
 		SerializerHandler.initialize(flags);
 
@@ -150,44 +159,85 @@ public class XMLRPCClient {
 
 		cookieManager = new CookieManager(flags);
 		authManager = new AuthenticationManager();
+		
+		this.trustStore = trustStore;
 
 		httpParameters.put(CONTENT_TYPE, TYPE_XML);
 		httpParameters.put(USER_AGENT, userAgent);
 
 	}
-
+	
 	/**
 	 * Create a new XMLRPC client for the given URL.
 	 * The default user agent string will be used.
+	 * The system KeyStore will be used.
 	 *
 	 * @param url The URL to send the requests to.
 	 * @param flags A combination of flags to be set.
 	 */
 	public XMLRPCClient(URL url, int flags) {
-		this(url, DEFAULT_USER_AGENT, flags);
+		this(url, DEFAULT_USER_AGENT, null, flags);
 	}
+	
+	/**
+     * Create a new XMLRPC client for the given URL.
+     * The default user agent string will be used.
+     *
+     * @param url The URL to send the requests to.
+     * @param flags A combination of flags to be set.
+     * @param trustStore a KeyStore to use when checking SSL certificates.
+     */
+    public XMLRPCClient(URL url, KeyStore trustStore, int flags) {
+        this(url, DEFAULT_USER_AGENT, trustStore, flags);
+    }
 
 	/**
 	 * Create a new XMLRPC client for the given url.
 	 * No flags will be set.
+	 * The system KeyStore will be used.
 	 *
 	 * @param url The url to send the requests to.
 	 * @param userAgent A user agent string to use in the http request.
 	 */
 	public XMLRPCClient(URL url, String userAgent) {
-		this(url, userAgent, FLAGS_NONE);
+		this(url, userAgent, null, FLAGS_NONE);
 	}
+	
+	/**
+     * Create a new XMLRPC client for the given url.
+     * No flags will be set.
+     *
+     * @param url The url to send the requests to.
+     * @param userAgent A user agent string to use in the http request.
+     * @param trustStore a KeyStore to use when checking SSL certificates.
+     */
+    public XMLRPCClient(URL url, String userAgent, KeyStore trustStore) {
+        this(url, userAgent, trustStore, FLAGS_NONE);
+    }
 
 	/**
 	 * Create a new XMLRPC client for the given url.
 	 * No flags will be used.
 	 * The default user agent string will be used.
+	 * The systemKeyStore will be used.
 	 *
 	 * @param url The url to send the requests to.
 	 */
 	public XMLRPCClient(URL url) {
-		this(url, DEFAULT_USER_AGENT, FLAGS_NONE);
+		this(url, DEFAULT_USER_AGENT, null, FLAGS_NONE);
 	}
+	
+	/**
+     * Create a new XMLRPC client for the given url.
+     * No flags will be used.
+     * The default user agent string will be used.
+     *
+     * @param url The url to send the requests to.
+     * @param trustStore a KeyStore to use when checking SSL certificates.
+     */
+    public XMLRPCClient(URL url, KeyStore trustStore) {
+        this(url, DEFAULT_USER_AGENT, trustStore, FLAGS_NONE);
+    }
 
 	/**
 	 * Sets the user agent string.
@@ -576,6 +626,42 @@ public class XMLRPCClient {
 						});
 					}
 					
+					// use a custom TrustStore if provided
+					if(trustStore != null) {
+					    Log.i("XMLRPCClient", "using custom truststore");
+					    // Initialize custom TrustManager
+					    if(customTrustManagers == null) {
+					        TrustManagerFactory tmf;
+					        try{
+    					        tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+    					        
+    					        tmf.init(trustStore);
+					        }
+					        catch(KeyStoreException e) {
+					            throw new XMLRPCException(e);
+					        }
+					        catch(NoSuchAlgorithmException e) {
+					            throw new XMLRPCException(e);
+					        }
+					        customTrustManagers = tmf.getTrustManagers();
+					    }
+					    
+					    // Associate the TrustManager with TLS connections.
+                        try {
+                            
+                            String[] sslContexts = new String[]{ "TLS" };
+                        
+                            for(String ctx : sslContexts) {
+                                SSLContext sc = SSLContext.getInstance(ctx);
+                                sc.init(null, customTrustManagers, new SecureRandom());
+                                h.setSSLSocketFactory(sc.getSocketFactory());
+                            }
+                            
+                        } catch(Exception ex) {
+                            throw new XMLRPCException(ex);
+                        }
+					}
+					
 					// Don't validate the certificate if flag is set.
 					if(isFlagSet(FLAGS_SSL_IGNORE_INVALID_CERT)) {
 					
@@ -595,10 +681,10 @@ public class XMLRPCClient {
 							}};
 						}
 						
-						// Associate the TrustManager with TLS and SSL connections.
+						// Associate the TrustManager with TLS connections.
 						try {
 							
-							String[] sslContexts = new String[]{ "TLS", "SSL" };
+							String[] sslContexts = new String[]{ "TLS"};
 						
 							for(String ctx : sslContexts) {
 								SSLContext sc = SSLContext.getInstance(ctx);
